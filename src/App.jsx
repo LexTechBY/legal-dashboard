@@ -1,43 +1,48 @@
 import React, { useState, useMemo, useRef } from 'react';
 import { 
-  FileText, Upload, Download, ClipboardList, 
-  Info, Loader2, Wand2, CheckCircle2, Scale, Zap 
+  FileText, Upload, Download, 
+  Info, Loader2, Scale, Sparkles, CheckCircle2 
 } from 'lucide-react';
 import mammoth from 'mammoth';
+import PizZip from 'pizzip';
 import { saveAs } from 'file-saver';
 
 export default function App() {
   const [htmlContent, setHtmlContent] = useState('');
+  const [originalBuffer, setOriginalBuffer] = useState(null); 
   const [formData, setFormData] = useState({});
   const [isProcessing, setIsProcessing] = useState(false);
-  const documentRef = useRef(null);
+  const [activeField, setActiveField] = useState(null);
+  
   const fileInputRef = useRef(null);
 
-  // 1. ЗАГРУЗКА WORD -> HTML
+  const resetTemplate = () => {
+    setHtmlContent('');
+    setOriginalBuffer(null);
+    setFormData({});
+    setActiveField(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     setIsProcessing(true);
     try {
       const arrayBuffer = await file.arrayBuffer();
-      const options = {
-        styleMap: [
-          "p[style-name='Heading 1'] => h1:fresh",
-          "p[style-name='Heading 2'] => h2:fresh",
-          "p[style-name='List Paragraph'] => li:fresh"
-        ]
-      };
-      const result = await mammoth.convertToHtml({ arrayBuffer }, options);
-      setHtmlContent(result.value);
+      setOriginalBuffer(arrayBuffer); 
+      const result = await mammoth.convertToHtml({ arrayBuffer });
+      setHtmlContent(result.value || '');
+      setFormData({}); 
     } catch (err) {
-      alert("Ошибка чтения файла");
+      alert("Ошибка при чтении DOCX");
     } finally {
       setIsProcessing(false);
     }
   };
 
-  // 2. ПОИСК МЕТОК
   const placeholders = useMemo(() => {
+    if (!htmlContent) return [];
     const regex = /\{([^{}|]+)(?:\|([^}]+))?\}/g;
     const matches = [];
     const seen = new Set();
@@ -51,183 +56,174 @@ export default function App() {
     return matches;
   }, [htmlContent]);
 
-  // Расчет прогресса заполнения
-  const progress = useMemo(() => {
-    if (placeholders.length === 0) return 0;
-    const filled = placeholders.filter(p => formData[p.key] && formData[p.key].trim() !== '').length;
-    return Math.round((filled / placeholders.length) * 100);
-  }, [formData, placeholders]);
-
-  // 3. СКРОЛЛИНГ К МЕТКЕ
-  const scrollToPlaceholder = (key) => {
-    const element = document.getElementById(`target-${key}`);
-    if (element) {
-      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      element.classList.add('highlight-flash');
-      setTimeout(() => element.classList.remove('highlight-flash'), 2000);
+  const handleBulkPaste = (e, startIndex) => {
+    const pasteData = e.clipboardData.getData('text');
+    const lines = pasteData.split(/\r?\n/).map(line => line.trim()).filter(line => line !== "");
+    if (lines.length > 1) {
+      e.preventDefault(); 
+      const newFormData = { ...formData };
+      lines.forEach((line, index) => {
+        const targetPlaceholder = placeholders[startIndex + index];
+        if (targetPlaceholder) { newFormData[targetPlaceholder.key] = line; }
+      });
+      setFormData(newFormData);
     }
   };
 
-  // 4. ГЕНЕРАЦИЯ ОБРАБОТАННОГО HTML
-  const getProcessedHtml = () => {
+  const exportOriginalWithData = async () => {
+    if (!originalBuffer) return;
+    setIsProcessing(true);
+    try {
+      const zip = new PizZip(originalBuffer);
+      const xmlFiles = Object.keys(zip.files).filter(name => 
+        name.match(/^word\/(document|header|footer|footnotes|endnotes)\d*\.xml$/)
+      );
+
+      xmlFiles.forEach((fileName) => {
+        let content = zip.files[fileName].asText();
+        content = content.replace(/<w:proofErr [^>]*\/>/g, '').replace(/<w:noProof[^>]*\/>/g, '').replace(/<w:lang [^>]*\/>/g, '');
+        const sorted = [...placeholders].sort((a, b) => b.full.length - a.full.length);
+        sorted.forEach(({ full, key }) => {
+          const fuzzyPattern = full.split('').map(c => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('(?:<[^>]+>)*');
+          const regex = new RegExp(fuzzyPattern, 'g');
+          if (regex.test(content)) {
+            const val = (formData[key] || full).toString().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            content = content.replace(regex, val);
+          }
+        });
+        zip.file(fileName, content);
+      });
+
+      const out = zip.generate({ type: "blob", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+      saveAs(out, `Lumina_Export_${Date.now()}.docx`);
+    } catch (err) {
+      alert("Ошибка сборки");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const getProcessedHtmlPreview = () => {
+    if (!htmlContent) return "";
     let finalHtml = htmlContent;
     placeholders.forEach(({ full, key }) => {
       const value = formData[key];
-      const replacement = value 
-        ? `<span id="target-${key}" class="data-filled">${value}</span>`
-        : `<span id="target-${key}" class="data-empty">${full}</span>`;
+      const filledStyle = `mx-0.5 px-2 py-0.5 bg-gradient-to-r from-teal-50 to-emerald-50 text-teal-900 font-bold rounded-md border-b-2 border-teal-500 shadow-sm transition-all`;
+      const emptyStyle = `mx-0.5 px-1.5 py-0.5 bg-teal-50/30 text-teal-600 border border-teal-200 border-dashed rounded-md font-medium transition-all`;
+      const replacement = `<span id="target-${key}" class="${value ? filledStyle : emptyStyle}">${value || full}</span>`;
       finalHtml = finalHtml.split(full).join(replacement);
     });
     return finalHtml;
   };
 
-  const exportToDocx = () => {
-    const content = getProcessedHtml();
-    const header = `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
-      <head><meta charset='utf-8'><style>
-        body { font-family: 'Times New Roman', serif; font-size: 12pt; }
-        p { margin-bottom: 10pt; text-align: justify; line-height: 1.2; }
-        table { border-collapse: collapse; width: 100%; }
-        td, th { border: 1px solid black; padding: 5pt; }
-      </style></head><body>${content}</body></html>`;
-    const blob = new Blob(['\ufeff', header], { type: 'application/msword' });
-    saveAs(blob, `Lumina_Export.doc`);
-  };
+  const isComplete = placeholders.length > 0 && placeholders.every(p => formData[p.key]);
 
   return (
-    // ГЛАВНЫЙ КОНТЕЙНЕР: Занимает весь экран и не скроллится сам
-    <div className="h-screen w-screen overflow-hidden bg-slate-50 flex font-sans text-slate-800">
+    <div className="h-screen w-screen bg-[#F1F5F9] flex overflow-hidden font-sans text-slate-900">
       
-      {/* ЛЕВАЯ ПАНЕЛЬ (АНКЕТА): Фиксирована, имеет свой скролл */}
-      <aside className="w-[420px] h-full bg-white border-r border-slate-200 flex flex-col z-30 shadow-2xl shrink-0">
+      {/* САЙДБАР С ОБНОВЛЕННЫМИ КНОПКАМИ */}
+      <aside className="w-[420px] bg-white border-r border-slate-200 flex flex-col shadow-2xl z-20">
         
-        {/* Заголовок анкеты (Всегда сверху) */}
-        <div className="p-8 bg-slate-900 text-white shrink-0">
-            <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 bg-indigo-500 rounded-lg flex items-center justify-center shadow-lg shadow-indigo-500/20">
-                        <Scale size={18} />
-                    </div>
-                    <h2 className="text-xl font-bold tracking-tight italic">Lumina Flow</h2>
-                </div>
-                <div className="text-[10px] bg-white/10 px-2 py-1 rounded-md font-mono text-indigo-300">v2.4</div>
+        {/* Брендинг и Компактный Импорт (Floating Design) */}
+        <div className="p-6 bg-[#0D2E2E] text-white relative overflow-hidden flex flex-col items-center shrink-0">
+          <div className="absolute -top-12 -left-12 w-32 h-32 bg-teal-500/10 rounded-full blur-3xl"></div>
+          
+          <div className="w-full flex items-center justify-between mb-6 relative z-10">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 bg-gradient-to-br from-teal-400 to-cyan-600 rounded-lg flex items-center justify-center shadow-lg">
+                <Sparkles size={18} />
+              </div>
+              <div>
+                <h2 className="text-lg font-bold italic leading-none text-white">Lumina <span className="text-teal-400">Pure</span></h2>
+                <p className="text-[8px] text-teal-200/50 font-bold uppercase tracking-widest mt-1">Legal Automator</p>
+              </div>
             </div>
-            
-            {/* Прогресс-бар */}
-            <div className="space-y-2">
-                <div className="flex justify-between text-[10px] uppercase tracking-widest font-bold text-slate-400">
-                    <span>Заполнение анкеты</span>
-                    <span>{progress}%</span>
-                </div>
-                <div className="h-1 w-full bg-white/10 rounded-full overflow-hidden">
-                    <div 
-                        className="h-full bg-indigo-500 transition-all duration-500" 
-                        style={{ width: `${progress}%` }}
-                    ></div>
-                </div>
-            </div>
-        </div>
-
-        {/* Список полей (Скроллится отдельно) */}
-        <div className="flex-1 overflow-y-auto p-8 space-y-8 scrollbar-thin scrollbar-thumb-slate-200">
-            {placeholders.length > 0 ? (
-                placeholders.map(({ key, comment }) => (
-                    <div key={key} className="group transition-all animate-in fade-in slide-in-from-left-4">
-                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-[2px] block mb-2 group-focus-within:text-indigo-600 transition-colors">
-                            {key.replace(/_/g, ' ')}
-                        </label>
-                        <input 
-                            type="text"
-                            onFocus={() => scrollToPlaceholder(key)}
-                            className="w-full bg-slate-50 border border-slate-100 rounded-xl px-5 py-4 text-sm focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-400 outline-none transition-all shadow-inner"
-                            placeholder="Введите значение..."
-                            value={formData[key] || ''}
-                            onChange={(e) => setFormData({...formData, [key]: e.target.value})}
-                        />
-                        {comment && (
-                            <div className="flex items-start gap-2 mt-3 px-1">
-                                <Info size={12} className="text-indigo-400 shrink-0 mt-0.5" />
-                                <p className="text-[11px] text-slate-400 italic leading-snug">{comment}</p>
-                            </div>
-                        )}
-                    </div>
-                ))
-            ) : (
-                <div className="h-full flex flex-col items-center justify-center text-center px-10">
-                    <Wand2 size={48} className="text-slate-200 mb-4 animate-pulse" />
-                    <p className="text-xs font-bold text-slate-300 uppercase tracking-widest">Ожидание документа...</p>
-                    <p className="text-[10px] text-slate-400 mt-2 italic">Загрузите .docx файл для генерации полей</p>
-                </div>
+            {originalBuffer && (
+              <button onClick={resetTemplate} className="p-2 hover:bg-red-500/20 text-red-300 rounded-lg transition-colors" title="Очистить">
+                <FileText size={14} />
+              </button>
             )}
+          </div>
+
+          <button 
+            onClick={() => fileInputRef.current.click()} 
+            className="relative z-10 w-[85%] bg-white/5 hover:bg-white/10 text-teal-100 border border-teal-500/30 py-2.5 rounded-full font-bold text-[10px] uppercase tracking-[2px] transition-all flex items-center justify-center gap-2 backdrop-blur-md active:scale-95"
+          >
+            <Upload size={14} className="text-teal-400" /> Импорт шаблона
+          </button>
+          <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".docx" className="hidden" />
         </div>
 
-        {/* Футер анкеты (Всегда снизу) */}
-        <div className="p-6 bg-slate-50 border-t border-slate-100 shrink-0">
-            <button 
-                onClick={exportToDocx}
-                disabled={!htmlContent || isProcessing}
-                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-4 rounded-2xl font-bold text-xs uppercase tracking-[3px] flex items-center justify-center gap-3 transition-all shadow-xl shadow-indigo-200 active:scale-[0.98] disabled:opacity-30 disabled:grayscale"
-            >
-                {isProcessing ? <Loader2 className="animate-spin" size={16} /> : <Download size={16} />}
-                Export .doc
-            </button>
+        {/* ЗОНА МЕТОК (УВЕЛИЧЕНА) */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-5 bg-white scrollbar-thin scrollbar-thumb-slate-100">
+          {placeholders.map(({ key, comment }, index) => (
+            <div key={key}>
+              <label className={`text-[9px] font-black uppercase tracking-widest block mb-1 px-1 transition-colors ${activeField === key ? 'text-teal-600' : 'text-slate-400'}`}>
+                {key.replace(/_/g, ' ')}
+              </label>
+              <input type="text" 
+                     onFocus={() => { setActiveField(key); document.getElementById(`target-${key}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }}
+                     onPaste={(e) => handleBulkPaste(e, index)}
+                     className={`w-full bg-slate-50 border rounded-xl px-4 py-3 text-sm outline-none transition-all ${activeField === key ? 'border-teal-400 ring-2 ring-teal-500/5 bg-white' : 'border-slate-100'}`}
+                     placeholder="Введите данные..." 
+                     value={formData[key] || ''} 
+                     onChange={(e) => setFormData({...formData, [key]: e.target.value})} />
+              {comment && <div className="flex gap-2 mt-2 px-1"><Info size={11} className="text-teal-500 shrink-0 mt-0.5 opacity-60" /><p className="text-[10px] text-slate-400 italic leading-snug">{comment}</p></div>}
+            </div>
+          ))}
+          {placeholders.length === 0 && (
+             <div className="h-full flex flex-col items-center justify-center text-center opacity-10 italic">
+                <FileText size={40} className="mb-4" />
+                <p className="text-[10px] font-bold uppercase tracking-widest">Ожидание файла</p>
+             </div>
+          )}
+        </div>
+
+        {/* ЭКСПОРТ (Элегантная Пилюля) */}
+        <div className="p-6 border-t border-slate-100 bg-white flex justify-center shrink-0">
+          <button 
+            onClick={exportOriginalWithData} 
+            disabled={!originalBuffer || isProcessing} 
+            className="w-[90%] h-12 bg-gradient-to-r from-teal-600 to-teal-700 hover:from-teal-500 hover:to-cyan-600 text-white rounded-full font-black text-[10px] uppercase tracking-[2px] flex items-center justify-center gap-3 shadow-lg shadow-teal-200/50 transition-all active:scale-[0.98] disabled:opacity-30 disabled:grayscale"
+          >
+            {isProcessing ? (
+              <Loader2 className="animate-spin" size={16} />
+            ) : (
+              <>
+                <Download size={16} />
+                <span>Готовый документ</span>
+              </>
+            )}
+          </button>
         </div>
       </aside>
 
-      {/* ПРАВАЯ ПАНЕЛЬ (ДОКУМЕНТ): Скроллится независимо */}
-      <main className="flex-1 h-full overflow-y-auto bg-[#F1F5F9] relative scroll-smooth p-12">
-        <div className="max-w-4xl mx-auto mb-20">
-            
-            {/* Верхняя навигация рабочей зоны */}
-            <div className="flex justify-between items-center mb-10">
-                <div className="flex items-center gap-4">
-                    <h1 className="text-2xl font-light text-slate-400">Preview <span className="font-bold text-slate-900">Workspace</span></h1>
+      {/* ПРЕВЬЮ */}
+      <main className="flex-1 overflow-y-auto relative p-12 scroll-smooth bg-[#F1F5F9]">
+        <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-teal-200/10 rounded-full blur-[120px] pointer-events-none"></div>
+        <div className="max-w-4xl mx-auto relative z-10">
+            <div className="w-full min-h-[1120px] p-[25mm] relative rounded-sm border border-white/80 overflow-hidden bg-white bg-gradient-to-tr from-[#F0FDFA] via-white to-[#F5F3FF] shadow-2xl">
+                <div className="absolute -bottom-32 -left-32 w-96 h-96 bg-teal-400/[0.05] rounded-full blur-[100px] pointer-events-none"></div>
+                
+                <div className="flex justify-between items-center mb-10 border-b border-teal-100/30 pb-6 relative z-10">
+                    <div className="flex items-center gap-2">
+                        <Scale size={18} className="text-teal-600 opacity-30" />
+                        <span className="text-[9px] font-bold tracking-[4px] uppercase text-teal-800/30">Document Preview</span>
+                    </div>
+                    <CheckCircle2 size={18} className={isComplete ? "text-emerald-500" : "text-slate-200"} />
                 </div>
                 
-                <button 
-                    onClick={() => fileInputRef.current.click()}
-                    className="group bg-white border border-slate-200 hover:border-indigo-400 px-8 py-3 rounded-full text-xs font-bold text-slate-600 shadow-sm transition-all flex items-center gap-3"
-                >
-                    <Upload size={14} className="group-hover:-translate-y-0.5 transition-transform" /> 
-                    ЗАГРУЗИТЬ .DOCX
-                </button>
-                <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".docx" className="hidden" />
-            </div>
-
-            {/* ТЕЛО ДОКУМЕНТА (ЛИСТ A4) */}
-            <div 
-                ref={documentRef}
-                className="bg-white shadow-[0_50px_100px_-20px_rgba(0,0,0,0.1)] w-full min-h-[1100px] p-[25mm] border border-slate-200 rounded-sm relative"
-                style={{ fontFamily: "'Times New Roman', serif", fontSize: '12pt' }}
-            >
-                {/* Внутренние стили документа */}
                 <style>{`
-                    .data-filled { background-color: #EEF2FF; color: #4338CA; font-weight: bold; padding: 0 4px; border-radius: 4px; border-bottom: 2px solid #C7D2FE; transition: all 0.3s; }
-                    .data-empty { color: #818CF8; border-bottom: 1px dashed #C7D2FE; font-weight: bold; }
-                    .highlight-flash { ring: 4px solid #818CF8; border-radius: 4px; box-shadow: 0 0 20px rgba(129, 140, 248, 0.4); }
-                    
-                    ol { list-style-type: decimal; padding-left: 2em; margin-bottom: 1em; }
-                    ul { list-style-type: disc; padding-left: 2em; margin-bottom: 1em; }
-                    li { margin-bottom: 0.5em; display: list-item; }
-                    h1, h2 { text-align: center; font-weight: bold; margin-bottom: 1.5em; text-transform: uppercase; letter-spacing: 1px; }
-                    p { margin-bottom: 1em; text-align: justify; line-height: 1.5; }
-                    table { width: 100%; border-collapse: collapse; margin-bottom: 1.5em; }
-                    td, th { border: 1px solid #000; padding: 8px; vertical-align: top; }
+                  .document-preview { font-family: 'Times New Roman', serif; line-height: 1.8; text-align: justify; color: #1e293b; font-size: 12pt; position: relative; z-index: 10; }
+                  .document-preview p { margin-bottom: 1.2em; }
+                  .document-preview span { transition: all 0.2s ease; box-shadow: 0 1px 2px rgba(20, 184, 166, 0.05); }
                 `}</style>
 
                 {htmlContent ? (
-                    <div 
-                        className="animate-in fade-in duration-700"
-                        dangerouslySetInnerHTML={{ __html: getProcessedHtml() }} 
-                    />
+                    <div className="document-preview transition-all duration-700" dangerouslySetInnerHTML={{ __html: getProcessedHtmlPreview() }} />
                 ) : (
-                    <div className="h-[900px] border-4 border-dashed border-slate-100 rounded-[60px] flex flex-col items-center justify-center text-slate-200">
-                        <div className="relative mb-6">
-                            <div className="absolute -inset-4 bg-indigo-500/5 rounded-full blur-2xl animate-pulse"></div>
-                            <FileText size={100} className="relative opacity-20" />
-                        </div>
-                        <span className="uppercase tracking-[10px] font-black text-slate-300">Lumina Flow</span>
-                        <p className="text-[10px] font-bold text-slate-400 mt-4 uppercase tracking-[2px]">Документ не импортирован</p>
+                    <div className="h-[800px] flex flex-col items-center justify-center opacity-10">
+                         <span className="text-3xl font-thin tracking-[20px] uppercase text-teal-900">Lumina</span>
                     </div>
                 )}
             </div>

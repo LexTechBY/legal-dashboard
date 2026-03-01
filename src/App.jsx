@@ -1,9 +1,10 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { 
   FileText, Upload, Download, 
   Info, Loader2, Scale, Sparkles, CheckCircle2,
   Users, ChevronLeft, ChevronRight, TableProperties,
-  Wrench, PenTool, Trash2, Settings
+  Wrench, PenTool, Trash2, Settings, Undo2,
+  Target, ArrowRight, AlertCircle
 } from 'lucide-react';
 import mammoth from 'mammoth';
 import PizZip from 'pizzip';
@@ -13,24 +14,27 @@ import JSZip from 'jszip';
 
 export default function App() {
   // === СУЩЕСТВУЮЩИЙ СТЕЙТ (DRAFTING MODE) ===
-  const [htmlContent, setHtmlContent] = useState('');
-  const[originalBuffer, setOriginalBuffer] = useState(null); 
+  const[htmlContent, setHtmlContent] = useState('');
+  const [originalBuffer, setOriginalBuffer] = useState(null); 
   const [formData, setFormData] = useState({});
   const [isProcessing, setIsProcessing] = useState(false);
   const [activeField, setActiveField] = useState(null);
   const fileInputRef = useRef(null);
 
-  const[appMode, setAppMode] = useState('single'); 
+  const [appMode, setAppMode] = useState('single'); 
   const [batchData, setBatchData] = useState([]); 
-  const [batchPreviewIndex, setBatchPreviewIndex] = useState(0);
+  const[batchPreviewIndex, setBatchPreviewIndex] = useState(0);
   const batchFileInputRef = useRef(null);
 
-  // === НОВЫЙ СТЕЙТ (BUILDER MODE) ===
+  // === СТЕЙТ DRAFTING (Подтверждение экспорта) ===
+  const[exportConfirm, setExportConfirm] = useState(false);
+
+  // === СУЩЕСТВУЮЩИЙ СТЕЙТ (BUILDER MODE) ===
   const [isBuilderMode, setIsBuilderMode] = useState(false);
-  const[replacements, setReplacements] = useState([]);
-  const [selectionRect, setSelectionRect] = useState(null);
-  const[selectedText, setSelectedText] = useState('');
-  const [newTagData, setNewTagData] = useState({ name: '', comment: '', replaceAll: true });
+  const [replacements, setReplacements] = useState([]);
+  const[selectionRect, setSelectionRect] = useState(null);
+  const [selectedText, setSelectedText] = useState('');
+  const[newTagData, setNewTagData] = useState({ name: '', comment: '', replaceAll: true });
 
   // === ОБЩАЯ ЛОГИКА ===
   const resetTemplate = () => {
@@ -43,6 +47,7 @@ export default function App() {
     setAppMode('single');
     setIsBuilderMode(false);
     setReplacements([]);
+    setExportConfirm(false);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -57,6 +62,7 @@ export default function App() {
       setHtmlContent(result.value || '');
       setFormData({}); 
       setReplacements([]);
+      setExportConfirm(false);
     } catch (err) {
       console.error(err);
       alert("Ошибка парсинга документа. Проверьте формат DOCX.");
@@ -79,7 +85,10 @@ export default function App() {
       }
     }
     return matches;
-  },[htmlContent]);
+  }, [htmlContent]);
+
+  // ИЗМЕНЕНИЕ 1: Сброс подтверждения экспорта при любом изменении данных
+  useEffect(() => { setExportConfirm(false); }, [formData, batchData, batchPreviewIndex]);
 
   const handleBulkPaste = (e, startIndex) => {
     const pasteData = e.clipboardData.getData('text');
@@ -95,7 +104,6 @@ export default function App() {
     }
   };
 
-  // ИСПРАВЛЕНО: Полная функция экспорта одиночного документа (без сокращений)
   const exportOriginalWithData = async () => {
     if (!originalBuffer) return;
     setIsProcessing(true);
@@ -104,8 +112,8 @@ export default function App() {
       const xmlFiles = Object.keys(zip.files).filter(name => name.match(/^word\/(document|header|footer|footnotes|endnotes)\d*\.xml$/));
       xmlFiles.forEach((fileName) => {
         let content = zip.files[fileName].asText();
-        content = content.replace(/<w:proofErr [^>]*\/>/g, '').replace(/<w:noProof[^>]*\/>/g, '').replace(/<w:lang [^>]*\/>/g, '');
-        const sorted = [...placeholders].sort((a, b) => b.full.length - a.full.length);
+        content = content.replace(/<w:proofErr[^>]*\/>/g, '').replace(/<w:noProof[^>]*\/>/g, '').replace(/<w:lang [^>]*\/>/g, '');
+        const sorted =[...placeholders].sort((a, b) => b.full.length - a.full.length);
         sorted.forEach(({ full, key }) => {
           const fuzzyPattern = full.split('').map(c => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('(?:<[^>]+>)*');
           const regex = new RegExp(fuzzyPattern, 'g');
@@ -122,6 +130,7 @@ export default function App() {
       alert("Ошибка сборки"); 
     } finally { 
       setIsProcessing(false); 
+      setExportConfirm(false);
     }
   };
 
@@ -157,7 +166,7 @@ export default function App() {
 
   const handleBatchDataChange = (key, value) => {
     setBatchData(prev => {
-      const newData =[...prev];
+      const newData = [...prev];
       newData[batchPreviewIndex] = { ...newData[batchPreviewIndex], [key]: value };
       return newData;
     });
@@ -175,7 +184,7 @@ export default function App() {
         xmlFiles.forEach((fileName) => {
           let content = docxZip.files[fileName].asText();
           content = content.replace(/<w:proofErr[^>]*\/>/g, '').replace(/<w:noProof[^>]*\/>/g, '').replace(/<w:lang[^>]*\/>/g, '');
-          const sorted = [...placeholders].sort((a, b) => b.full.length - a.full.length);
+          const sorted =[...placeholders].sort((a, b) => b.full.length - a.full.length);
           sorted.forEach(({ full, key }) => {
             const fuzzyPattern = full.split('').map(c => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('(?:<[^>]+>)*');
             const regex = new RegExp(fuzzyPattern, 'g');
@@ -196,7 +205,8 @@ export default function App() {
     } catch (err) { 
       alert("Ошибка генерации"); 
     } finally { 
-      setIsProcessing(false); 
+      setIsProcessing(false);
+      setExportConfirm(false); // Сброс стейта экспорта после создания архива
     }
   };
 
@@ -226,12 +236,16 @@ export default function App() {
     setReplacements(prev =>[...prev, {
       id: Date.now(),
       originalText: selectedText,
-      tag: newTagData.name.replace(/[^a-zA-Z0-9_]/g, ''), 
+      tag: newTagData.name.replace(/[^a-zA-Zа-яА-ЯёЁ0-9_]/g, ''), 
       comment: newTagData.comment,
       replaceAll: newTagData.replaceAll
     }]);
     setSelectionRect(null);
     window.getSelection().removeAllRanges();
+  };
+
+  const undoLastReplacement = () => {
+    setReplacements(prev => prev.slice(0, -1));
   };
 
   const exportTemplate = async () => {
@@ -272,6 +286,49 @@ export default function App() {
     }
   };
 
+  // Smart Autocomplete (поиск существующих тегов)
+  const existingTags = Array.from(new Set(replacements.map(r => r.tag)));
+  const matchingTags = newTagData.name 
+    ? existingTags.filter(t => t.toLowerCase().includes(newTagData.name.toLowerCase()) && t !== newTagData.name) 
+    :[];
+
+  // Группировка меток для сайдбара
+  const groupedReplacements = useMemo(() => {
+    const map = new Map();
+    replacements.forEach(r => {
+      if (!map.has(r.tag)) {
+        map.set(r.tag, { tag: r.tag, originalTexts: new Set(), comments: new Set(), ids:[] });
+      }
+      const group = map.get(r.tag);
+      group.originalTexts.add(r.originalText);
+      if (r.comment) group.comments.add(r.comment);
+      group.ids.push(r.id);
+    });
+    return Array.from(map.values()).map(g => ({
+      ...g,
+      originalTexts: Array.from(g.originalTexts),
+      comments: Array.from(g.comments)
+    }));
+  }, [replacements]);
+
+  // ИЗМЕНЕНИЕ 2: Прогресс-бар для Drafting (универсальный для Single и Batch)
+  const totalFields = placeholders.length;
+  const filledFields = placeholders.filter(p => currentFormData[p.key]).length;
+  const progressPercent = totalFields === 0 ? 0 : Math.round((filledFields / totalFields) * 100);
+  const isComplete = totalFields > 0 && filledFields === totalFields;
+
+  // Макро-проверка для всего массива
+  const isBatchComplete = batchData.length > 0 && batchData.every(row => placeholders.every(p => row[p.key]));
+
+  const focusNextEmpty = () => {
+    const nextEmpty = placeholders.find(p => !currentFormData[p.key]);
+    if (nextEmpty) {
+       setActiveField(nextEmpty.key);
+       document.getElementById(`target-${nextEmpty.key}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+       document.getElementById(`input-${nextEmpty.key}`)?.focus();
+    }
+  };
+
   // === ПРЕВЬЮ (ДИНАМИЧЕСКИЙ РЕНДЕР) ===
   const processedHtmlPreview = useMemo(() => {
     if (!htmlContent) return "";
@@ -279,7 +336,7 @@ export default function App() {
     
     if (isBuilderMode) {
       replacements.forEach(r => {
-         const badge = `<span class="builder-tag">[${r.tag}]</span>`;
+         const badge = `<span id="builder-tag-${r.id}" class="builder-tag">[${r.tag}]</span>`;
          if (r.replaceAll) {
            finalHtml = finalHtml.split(r.originalText).join(badge);
          } else {
@@ -293,16 +350,14 @@ export default function App() {
     placeholders.forEach(({ full, key }) => {
       const value = currentFormData[key];
       const filledStyle = `mx-0.5 px-2 py-0.5 bg-indigo-50/80 text-indigo-900 font-semibold rounded-md shadow-[0_1px_3px_rgba(79,70,229,0.1)] border-b border-indigo-300 transition-all`;
-      const emptyStyle = `mx-0.5 px-1.5 py-0.5 bg-slate-100/50 text-slate-400 border border-slate-300 border-dashed rounded-md font-medium transition-all`;
+      const emptyStyle = `mx-0.5 px-1.5 py-0.5 bg-amber-50 text-amber-700 border border-amber-300/60 border-dashed rounded-md font-medium transition-all shadow-[0_0_10px_rgba(251,191,36,0.15)]`;
       
       const safeValue = escapeHtml(value);
       const replacement = `<span id="target-${key}" class="${value ? filledStyle : emptyStyle}">${safeValue || full}</span>`;
       finalHtml = finalHtml.split(full).join(replacement);
     });
     return finalHtml; 
-  }, [htmlContent, placeholders, currentFormData, isBuilderMode, replacements]);
-
-  const isComplete = placeholders.length > 0 && placeholders.every(p => currentFormData[p.key]);
+  },[htmlContent, placeholders, currentFormData, isBuilderMode, replacements]);
 
   return (
     <div className="h-screen w-screen bg-[#F8FAFC] flex overflow-hidden font-sans text-slate-900 selection:bg-indigo-100 selection:text-indigo-900 relative">
@@ -318,13 +373,29 @@ export default function App() {
               "{selectedText}"
             </div>
           </div>
-          <input 
-            autoFocus
-            placeholder="Имя метки (напр. CompanyName)" 
-            className="w-64 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 font-medium"
-            value={newTagData.name}
-            onChange={e => setNewTagData({...newTagData, name: e.target.value.replace(/[^a-zA-Z0-9_]/g, '')})} 
-          />
+          <div className="relative">
+            <input 
+              autoFocus
+              placeholder="Имя метки" 
+              className="w-64 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 font-medium relative z-10"
+              value={newTagData.name}
+              onChange={e => setNewTagData({...newTagData, name: e.target.value.replace(/[^a-zA-Zа-яА-ЯёЁ0-9_]/g, '')})} 
+            />
+            {matchingTags.length > 0 && (
+              <div className="absolute top-full left-0 mt-1 w-full bg-white border border-purple-100 rounded-lg shadow-xl overflow-hidden z-50 animate-in fade-in slide-in-from-top-2 duration-200">
+                {matchingTags.map(tag => (
+                  <div 
+                    key={tag} 
+                    onClick={() => setNewTagData({...newTagData, name: tag})} 
+                    className="px-3 py-2.5 text-xs text-purple-700 hover:bg-purple-50 cursor-pointer font-bold border-b border-purple-50 last:border-0 flex items-center justify-between group"
+                  >
+                    <span>{tag}</span>
+                    <Target size={12} className="opacity-0 group-hover:opacity-100 text-purple-400 transition-opacity" />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           <input 
             placeholder="Подсказка (опционально)" 
             className="w-64 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20"
@@ -338,7 +409,7 @@ export default function App() {
             </label>
             <button 
               onClick={addReplacement} disabled={!newTagData.name}
-              className="bg-purple-600 hover:bg-purple-700 disabled:bg-slate-300 text-white px-4 py-1.5 rounded-lg text-xs font-bold transition-all active:scale-95 shadow-md shadow-purple-500/30 disabled:shadow-none"
+              className="bg-purple-600 hover:bg-purple-700 disabled:bg-slate-300 text-white px-4 py-1.5 rounded-lg text-xs font-bold transition-all active:scale-95 shadow-md shadow-purple-500/30 disabled:shadow-none relative z-10"
             >
               Создать
             </button>
@@ -395,17 +466,57 @@ export default function App() {
           
           {isBuilderMode ? (
             <div className="space-y-4 animate-in fade-in duration-300">
-               <div className="mb-6">
-                 <h3 className="text-[11px] font-bold text-purple-900 uppercase tracking-widest mb-2 flex items-center gap-2">Инспектор разметки</h3>
-                 <p className="text-[11px] text-purple-700/60 leading-relaxed">Выделяйте текст в документе справа. Система автоматически обернет его в динамические переменные.</p>
+               <div className="mb-6 flex items-start justify-between">
+                 <div>
+                   <h3 className="text-[11px] font-bold text-purple-900 uppercase tracking-widest mb-2 flex items-center gap-2">Инспектор разметки</h3>
+                   <p className="text-[11px] text-purple-700/60 leading-relaxed">Выделяйте текст в документе справа. Система автоматически обернет его в динамические переменные.</p>
+                 </div>
+                 {replacements.length > 0 && (
+                   <button 
+                     onClick={undoLastReplacement} 
+                     className="p-1.5 ml-3 bg-purple-50 text-purple-600 hover:text-purple-900 hover:bg-purple-100 rounded-md transition-colors border border-purple-100 shadow-sm shrink-0" 
+                     title="Отменить последнее действие (Ctrl+Z)"
+                   >
+                     <Undo2 size={16} />
+                   </button>
+                 )}
                </div>
                
-               {replacements.length > 0 ? replacements.map(r => (
-                 <div key={r.id} className="bg-white border border-purple-100 rounded-xl p-3.5 shadow-[0_2px_10px_rgba(168,85,247,0.04)] relative group transition-all hover:border-purple-300">
-                    <div className="text-[10px] text-slate-400 mb-1.5 font-medium line-clamp-1 break-all">"{r.originalText}"</div>
-                    <div className="font-bold text-purple-700 text-xs tracking-wide">{'{' + r.tag + '}'}</div>
-                    {r.comment && <div className="text-[10px] text-slate-500 mt-2 flex gap-1.5 items-start bg-slate-50 p-1.5 rounded-md"><Info size={12} className="mt-0.5 text-purple-400 shrink-0"/> <span className="leading-snug">{r.comment}</span></div>}
-                    <button onClick={() => setReplacements(replacements.filter(item => item.id !== r.id))} className="absolute top-3 right-3 p-1.5 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 hover:bg-red-50 rounded-md transition-all"><Trash2 size={14}/></button>
+               {groupedReplacements.length > 0 ? groupedReplacements.map(group => (
+                 <div 
+                   key={group.tag} 
+                   onClick={() => document.getElementById(`builder-tag-${group.ids[0]}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+                   className="bg-white border border-purple-100 rounded-xl p-4 shadow-[0_2px_10px_rgba(168,85,247,0.04)] relative group hover:border-purple-300 transition-all cursor-pointer"
+                 >
+                    <div className="flex justify-between items-center mb-2.5">
+                      <div className="font-bold text-purple-700 text-sm tracking-wide bg-purple-50 px-2 py-0.5 rounded-md inline-block pointer-events-none">
+                        {'{' + group.tag + '}'}
+                      </div>
+                      <span className="text-[10px] font-bold text-purple-300 bg-white border border-purple-100 px-1.5 py-0.5 rounded-full pointer-events-none">x{group.ids.length}</span>
+                    </div>
+
+                    <div className="space-y-1.5 pointer-events-none">
+                      {group.originalTexts.map((text, idx) => (
+                        <div key={idx} className="text-[10px] text-slate-500 font-medium line-clamp-1 border-l-2 border-purple-200 pl-2">
+                          "{text}"
+                        </div>
+                      ))}
+                    </div>
+
+                    {group.comments.length > 0 && (
+                      <div className="text-[10px] text-slate-500 mt-3 flex gap-1.5 items-start bg-slate-50 p-2 rounded-md pointer-events-none">
+                        <Info size={12} className="mt-0.5 text-purple-400 shrink-0"/> 
+                        <span className="leading-snug">{group.comments[0]}</span>
+                      </div>
+                    )}
+
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); setReplacements(replacements.filter(r => r.tag !== group.tag)); }} 
+                      className="absolute top-3 right-3 p-1.5 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 hover:bg-red-50 rounded-md transition-all"
+                      title="Удалить все привязки этой метки"
+                    >
+                      <Trash2 size={14}/>
+                    </button>
                  </div>
                )) : (
                  <div className="opacity-40 text-center mt-16">
@@ -416,15 +527,56 @@ export default function App() {
             </div>
           ) : (
              appMode === 'single' ? (
-              placeholders.length > 0 ? placeholders.map(({ key, comment }, index) => (
-                <div key={key} className="relative">
-                  <label className={`text-[10px] font-bold uppercase tracking-wider block mb-2 transition-colors ${activeField === key ? 'text-indigo-600' : 'text-slate-500'}`}>
-                    {key.replace(/_/g, ' ')}
-                  </label>
-                  <input type="text" onFocus={() => { setActiveField(key); document.getElementById(`target-${key}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }} onBlur={() => setActiveField(null)} onPaste={(e) => handleBulkPaste(e, index)} className={`w-full bg-white border rounded-xl px-4 py-3.5 text-sm outline-none transition-all shadow-sm ${activeField === key ? 'border-indigo-400 ring-4 ring-indigo-500/10' : 'border-slate-200 hover:border-slate-300 focus:border-indigo-400'}`} placeholder="Введите значение..." value={formData[key] || ''} onChange={(e) => setFormData({...formData, [key]: e.target.value})} />
-                  {comment && <div className="flex gap-2 mt-2 px-1 items-start"><Info size={12} className="text-indigo-400 shrink-0 mt-0.5" /><p className="text-[11px] text-slate-500 leading-relaxed">{comment}</p></div>}
-                </div>
-              )) : (
+              placeholders.length > 0 ? (
+                <>
+                  <div className="sticky top-0 bg-[#F8FAFC]/95 backdrop-blur-md pb-4 pt-1 z-10 border-b border-slate-100 mb-2 flex items-center justify-between">
+                    <div className="w-full mr-4">
+                      <div className="flex justify-between items-end mb-2">
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Прогресс</span>
+                        <span className="text-[10px] font-bold text-indigo-600">{filledFields} / {totalFields}</span>
+                      </div>
+                      <div className="h-1.5 w-full bg-slate-200 rounded-full overflow-hidden">
+                        <div className="h-full bg-indigo-500 transition-all duration-500 rounded-full" style={{ width: `${progressPercent}%` }}></div>
+                      </div>
+                    </div>
+                    {!isComplete && (
+                      <button 
+                        onClick={focusNextEmpty} 
+                        className="shrink-0 flex items-center justify-center p-2 rounded-full bg-amber-50 text-amber-600 hover:bg-amber-100 hover:text-amber-700 transition-colors shadow-sm border border-amber-200/50"
+                        title="К следующему пустому полю"
+                      >
+                        <ArrowRight size={16} />
+                      </button>
+                    )}
+                  </div>
+
+                  {placeholders.map(({ key, comment }, index) => {
+                    const isFilled = !!formData[key];
+                    return (
+                      <div key={key} className="relative group">
+                        <div className="flex items-center gap-2 mb-2">
+                          <div className={`w-1.5 h-1.5 rounded-full ${isFilled ? 'bg-indigo-400' : 'bg-amber-400 animate-pulse'}`}></div>
+                          <label className={`text-[10px] font-bold uppercase tracking-wider block transition-colors ${activeField === key ? 'text-indigo-600' : 'text-slate-500'}`}>
+                            {key.replace(/_/g, ' ')}
+                          </label>
+                        </div>
+                        <input 
+                          id={`input-${key}`}
+                          type="text" 
+                          onFocus={() => { setActiveField(key); document.getElementById(`target-${key}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }} 
+                          onBlur={() => setActiveField(null)} 
+                          onPaste={(e) => handleBulkPaste(e, index)} 
+                          className={`w-full bg-white border rounded-xl px-4 py-3.5 text-sm outline-none transition-all shadow-sm ${activeField === key ? 'border-indigo-400 ring-4 ring-indigo-500/10' : (!isFilled ? 'border-amber-200 hover:border-amber-300 focus:border-indigo-400' : 'border-slate-200 hover:border-slate-300 focus:border-indigo-400')}`} 
+                          placeholder="Введите значение..." 
+                          value={formData[key] || ''} 
+                          onChange={(e) => setFormData({...formData, [key]: e.target.value})} 
+                        />
+                        {comment && <div className="flex gap-2 mt-2 px-1 items-start"><Info size={12} className="text-indigo-400 shrink-0 mt-0.5" /><p className="text-[11px] text-slate-500 leading-relaxed">{comment}</p></div>}
+                      </div>
+                    )
+                  })}
+                </>
+              ) : (
                 <div className="h-full flex flex-col items-center justify-center text-center opacity-40 mt-20">
                     <FileText size={48} strokeWidth={1} className="mb-4 text-slate-400" />
                     <p className="text-[11px] font-semibold uppercase tracking-widest text-slate-500">Ожидание шаблона</p>
@@ -450,12 +602,52 @@ export default function App() {
                       <span className="flex items-center gap-2 text-[11px] font-bold text-emerald-700 uppercase tracking-wider"><CheckCircle2 size={16} /> Массив загружен ({batchData.length})</span>
                       <button onClick={() => { setBatchData([]); setBatchPreviewIndex(0); }} className="text-[10px] font-bold text-emerald-600 hover:text-emerald-800 uppercase tracking-wider transition-colors">Сбросить</button>
                     </div>
-                    {placeholders.map(({ key, comment }) => (
-                      <div key={key} className="relative">
-                        <label className={`text-[10px] font-bold uppercase tracking-wider block mb-2 transition-colors ${activeField === key ? 'text-indigo-600' : 'text-slate-500'}`}>{key.replace(/_/g, ' ')}</label>
-                        <input type="text" onFocus={() => { setActiveField(key); document.getElementById(`target-${key}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }} onBlur={() => setActiveField(null)} className={`w-full bg-white border rounded-xl px-4 py-3.5 text-sm outline-none transition-all shadow-sm ${activeField === key ? 'border-indigo-400 ring-4 ring-indigo-500/10' : 'border-slate-200 hover:border-slate-300 focus:border-indigo-400'}`} value={(batchData[batchPreviewIndex] && batchData[batchPreviewIndex][key]) || ''} onChange={(e) => handleBatchDataChange(key, e.target.value)} />
+
+                    {/* ИЗМЕНЕНИЕ 3: Интеграция Zen Progress для Batch Mode */}
+                    <div className="sticky top-0 bg-[#F8FAFC]/95 backdrop-blur-md pb-4 pt-1 z-10 border-b border-slate-100 mb-2 flex items-center justify-between mt-4">
+                      <div className="w-full mr-4">
+                        <div className="flex justify-between items-end mb-2">
+                          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Прогресс документа {batchPreviewIndex + 1}</span>
+                          <span className="text-[10px] font-bold text-indigo-600">{filledFields} / {totalFields}</span>
+                        </div>
+                        <div className="h-1.5 w-full bg-slate-200 rounded-full overflow-hidden">
+                          <div className="h-full bg-indigo-500 transition-all duration-500 rounded-full" style={{ width: `${progressPercent}%` }}></div>
+                        </div>
                       </div>
-                    ))}
+                      {!isComplete && (
+                        <button 
+                          onClick={focusNextEmpty} 
+                          className="shrink-0 flex items-center justify-center p-2 rounded-full bg-amber-50 text-amber-600 hover:bg-amber-100 hover:text-amber-700 transition-colors shadow-sm border border-amber-200/50"
+                          title="К следующему пустому полю"
+                        >
+                          <ArrowRight size={16} />
+                        </button>
+                      )}
+                    </div>
+
+                    {placeholders.map(({ key, comment }) => {
+                      const isFilled = !!currentFormData[key];
+                      return (
+                        <div key={key} className="relative group">
+                          <div className="flex items-center gap-2 mb-2">
+                            <div className={`w-1.5 h-1.5 rounded-full ${isFilled ? 'bg-indigo-400' : 'bg-amber-400 animate-pulse'}`}></div>
+                            <label className={`text-[10px] font-bold uppercase tracking-wider block transition-colors ${activeField === key ? 'text-indigo-600' : 'text-slate-500'}`}>
+                              {key.replace(/_/g, ' ')}
+                            </label>
+                          </div>
+                          <input 
+                            id={`input-${key}`}
+                            type="text" 
+                            onFocus={() => { setActiveField(key); document.getElementById(`target-${key}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }} 
+                            onBlur={() => setActiveField(null)} 
+                            className={`w-full bg-white border rounded-xl px-4 py-3.5 text-sm outline-none transition-all shadow-sm ${activeField === key ? 'border-indigo-400 ring-4 ring-indigo-500/10' : (!isFilled ? 'border-amber-200 hover:border-amber-300 focus:border-indigo-400' : 'border-slate-200 hover:border-slate-300 focus:border-indigo-400')}`} 
+                            value={(batchData[batchPreviewIndex] && batchData[batchPreviewIndex][key]) || ''} 
+                            onChange={(e) => handleBatchDataChange(key, e.target.value)} 
+                          />
+                          {comment && <div className="flex gap-2 mt-2 px-1 items-start"><Info size={12} className="text-indigo-400 shrink-0 mt-0.5" /><p className="text-[11px] text-slate-500 leading-relaxed">{comment}</p></div>}
+                        </div>
+                      )
+                    })}
                   </div>
                 )}
               </div>
@@ -474,13 +666,42 @@ export default function App() {
               {isProcessing ? <Loader2 className="animate-spin" size={18} /> : <><Download size={18} /><span>Скачать DOCX Шаблон</span></>}
             </button>
           ) : (
-            <button 
-              onClick={appMode === 'single' ? exportOriginalWithData : exportBatchDocs} 
-              disabled={!originalBuffer || isProcessing || (appMode === 'batch' && batchData.length === 0)} 
-              className="w-full h-12 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-3 shadow-[0_8px_20px_rgba(79,70,229,0.25)] transition-all active:scale-[0.98] disabled:opacity-50 disabled:shadow-none disabled:cursor-not-allowed"
-            >
-              {isProcessing ? <Loader2 className="animate-spin" size={18} /> : <><Download size={18} /><span>{appMode === 'single' ? "Создать документ" : `Создать архив (${batchData.length} шт)`}</span></>}
-            </button>
+            appMode === 'single' ? (
+              <button 
+                onClick={() => {
+                  if (!isComplete && !exportConfirm) { setExportConfirm(true); return; }
+                  exportOriginalWithData();
+                }} 
+                disabled={!originalBuffer || isProcessing} 
+                className={`w-full h-12 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-3 transition-all active:scale-[0.98] disabled:opacity-50 disabled:shadow-none disabled:cursor-not-allowed ${
+                  exportConfirm 
+                  ? 'bg-amber-500 hover:bg-amber-600 text-white shadow-[0_8px_20px_rgba(245,158,11,0.25)]' 
+                  : 'bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white shadow-[0_8px_20px_rgba(79,70,229,0.25)]'
+                }`}
+              >
+                {isProcessing ? <Loader2 className="animate-spin" size={18} /> : (
+                  exportConfirm ? <><AlertCircle size={18} /><span>Остались пустые поля. Скачать?</span></> : <><Download size={18} /><span>Создать документ</span></>
+                )}
+              </button>
+            ) : (
+              // ИЗМЕНЕНИЕ 4: Smart Guard Export для Batch Mode
+              <button 
+                onClick={() => {
+                  if (!isBatchComplete && !exportConfirm) { setExportConfirm(true); return; }
+                  exportBatchDocs();
+                }} 
+                disabled={!originalBuffer || isProcessing || batchData.length === 0} 
+                className={`w-full h-12 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-3 transition-all active:scale-[0.98] disabled:opacity-50 disabled:shadow-none disabled:cursor-not-allowed ${
+                  (exportConfirm && !isBatchComplete)
+                  ? 'bg-amber-500 hover:bg-amber-600 text-white shadow-[0_8px_20px_rgba(245,158,11,0.25)]' 
+                  : 'bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white shadow-[0_8px_20px_rgba(79,70,229,0.25)]'
+                }`}
+              >
+                {isProcessing ? <Loader2 className="animate-spin" size={18} /> : (
+                  (exportConfirm && !isBatchComplete) ? <><AlertCircle size={18} /><span>Есть пропуски. Создать?</span></> : <><Download size={18} /><span>Создать архив ({batchData.length} шт)</span></>
+                )}
+              </button>
+            )
           )}
         </div>
       </aside>
@@ -488,22 +709,19 @@ export default function App() {
       {/* ПРЕВЬЮ ДОКУМЕНТА */}
       <main className="flex-1 overflow-y-auto relative p-12 scroll-smooth bg-slate-50/50">
         
-        {/* КНОПКА НА МИЛЛИОН ДОЛЛАРОВ (BUILDER TOGGLE) */}
-        {originalBuffer && (
-          <div className="absolute top-8 right-12 z-40">
-            <button
-              onClick={() => { setIsBuilderMode(!isBuilderMode); window.getSelection().removeAllRanges(); setSelectionRect(null); }}
-              className={`flex items-center gap-2.5 px-5 py-2.5 rounded-full font-black text-[10px] uppercase tracking-[0.2em] backdrop-blur-xl transition-all duration-500 border shadow-2xl ${
-                isBuilderMode 
-                ? 'bg-purple-900/90 text-purple-100 border-purple-500/50 shadow-purple-900/20 hover:bg-purple-800' 
-                : 'bg-white/80 text-slate-400 border-white hover:text-purple-600 hover:bg-white shadow-slate-200/50 hover:shadow-purple-500/10'
-              }`}
-            >
-              <Settings size={14} className={`${isBuilderMode ? 'animate-[spin_4s_linear_infinite] text-purple-300' : ''}`} />
-              {isBuilderMode ? 'Выйти из Builder' : 'Builder Mode'}
-            </button>
-          </div>
-        )}
+        <div className="absolute top-8 right-12 z-40">
+          <button
+            onClick={() => { setIsBuilderMode(!isBuilderMode); window.getSelection().removeAllRanges(); setSelectionRect(null); }}
+            className={`flex items-center gap-2.5 px-5 py-2.5 rounded-full font-black text-[10px] uppercase tracking-[0.2em] backdrop-blur-xl transition-all duration-500 border shadow-2xl ${
+              isBuilderMode 
+              ? 'bg-purple-900/90 text-purple-100 border-purple-500/50 shadow-purple-900/20 hover:bg-purple-800' 
+              : 'bg-white/80 text-slate-400 border-white hover:text-purple-600 hover:bg-white shadow-slate-200/50 hover:shadow-purple-500/10'
+            }`}
+          >
+            <Settings size={14} className={`${isBuilderMode ? 'animate-[spin_4s_linear_infinite] text-purple-300' : ''}`} />
+            {isBuilderMode ? 'Выйти из Builder' : 'Builder Mode'}
+          </button>
+        </div>
 
         <div className={`fixed top-[-15%] right-[-5%] w-[60vw] h-[60vw] rounded-full blur-[140px] pointer-events-none transition-colors duration-1000 ${isBuilderMode ? 'bg-gradient-to-bl from-purple-200/20 via-pink-200/10 to-transparent' : 'bg-gradient-to-bl from-indigo-200/20 via-purple-200/20 to-transparent'}`}></div>
         
@@ -533,7 +751,7 @@ export default function App() {
                   .document-preview { font-family: 'Times New Roman', Times, serif; line-height: 1.6; text-align: justify; color: #0f172a; font-size: 11pt; position: relative; z-index: 10; }
                   .document-preview p { margin-bottom: 14pt; }
                   .document-preview span { transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
-                  .builder-tag { background: #faf5ff; color: #7e22ce; font-weight: 600; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #c084fc; box-shadow: 0 1px 2px rgba(168,85,247,0.1); font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.9em; }
+                  .builder-tag { background: #faf5ff; color: #7e22ce; font-weight: 600; padding: 2px 4px; border-radius: 4px; border-bottom: 2px solid #c084fc; box-shadow: 0 1px 2px rgba(168,85,247,0.1); font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.9em; scroll-margin-top: 200px; }
                 `}</style>
 
                 {htmlContent ? (
